@@ -1,0 +1,159 @@
+const BOT_TOKEN = "";  // Telegram Bot Token
+const CHAT_ID   = "";  // Telegram Chat ID
+
+// Telegram 推送
+async function tg(msg) {
+    if (!BOT_TOKEN || !CHAT_ID) return;
+    await fetch("https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: CHAT_ID, text: msg })
+    });
+}
+
+// KV 读取
+async function loadList() {
+    const raw = await KEEP.get("list");
+    return raw ? JSON.parse(raw) : [];
+}
+
+// KV 保存
+async function saveList(list) {
+    await KEEP.put("list", JSON.stringify(list));
+}
+
+/* ===========================
+      管理后台 (含夜间模式)
+   =========================== */
+const adminHTML =
+"<!DOCTYPE html><html><head><meta charset='utf-8'><title>KeepURL 管理</title>" +
+"<meta name='viewport' content='width=device-width, initial-scale=1'>" +
+"<style>" +
+"body{font-family:sans-serif;padding:20px;transition:0.3s;} " +
+".dark{background:#111;color:#ddd;} " +
+"input,button{padding:6px;margin:4px 0;border-radius:6px;} " +
+"input{width:90%;} " +
+".item{border:1px solid #666;padding:10px;margin:6px 0;border-radius:6px;} " +
+"</style></head><body>" +
+"<button onclick='toggleDark()'>🌙 夜间模式</button>" +
+"<h2>🟢 KeepURL 管理后台</h2>" +
+"<p><a href='/status' target='_blank'>查看公开状态页</a></p>" +
+
+"<h3>添加监控</h3>" +
+"<input id='name' placeholder='名称'><br>" +
+"<input id='url' placeholder='https://example.com'><br>" +
+"<button onclick='add()'>添加</button>" +
+
+"<h3>监控列表</h3>" +
+"<div id='list'></div>" +
+
+"<script>" +
+// 夜间模式
+"if(localStorage.dark=='1') document.body.classList.add('dark');" +
+"function toggleDark(){document.body.classList.toggle('dark');localStorage.dark=document.body.classList.contains('dark')?'1':'0';}" +
+
+"async function load(){var r=await fetch('/api/list'); var j=await r.json(); var box=document.getElementById('list'); box.innerHTML='';" +
+"j.forEach(function(x,i){ box.innerHTML += '<div class=\"item\"><b>'+x.name+'</b><br><small>'+x.url+'</small><br><button onclick=\"del('+i+')\">删除</button></div>'; });}" +
+
+"async function add(){var name=document.getElementById('name').value.trim(); var url=document.getElementById('url').value.trim(); if(!name||!url){alert('请输入');return;} await fetch('/api/add',{method:'POST',body:JSON.stringify({name:name,url:url})}); load();}" +
+
+"async function del(i){ await fetch('/api/del?i='+i); load(); }" +
+
+"load();" +
+"</script></body></html>";
+
+/* ===========================
+      公共状态页 (含夜间模式)
+   =========================== */
+const statusHTML =
+"<!DOCTYPE html><html><head><meta charset='utf-8'><title>KeepURL 状态</title>" +
+"<meta name='viewport' content='width=device-width, initial-scale=1'>" +
+"<style>" +
+"body{font-family:sans-serif;padding:20px;transition:0.3s;} " +
+".dark{background:#111;color:#ddd;} " +
+".card{border:1px solid #aaa;padding:10px;margin:8px 0;border-radius:6px;} " +
+".ok{color:#4caf50;} .bad{color:#f44336;} " +
+"</style></head><body>" +
+
+"<button onclick='toggleDark()'>🌙 夜间模式</button>" +
+"<h2>📡 KeepURL 在线监控</h2><p>每 30 秒自动刷新</p>" +
+"<div id='box'>加载中…</div>" +
+
+"<script>" +
+// 夜间模式
+"if(localStorage.dark=='1') document.body.classList.add('dark');" +
+"function toggleDark(){document.body.classList.toggle('dark');localStorage.dark=document.body.classList.contains('dark')?'1':'0';}" +
+
+"async function loadStatus(){var r=await fetch('/api/status'); var j=await r.json(); var box=document.getElementById('box'); box.innerHTML='';" +
+"j.forEach(function(x){ box.innerHTML += '<div class=\"card\"><b>'+x.name+'</b><br><small>'+x.url+'</small><br><span class=\"'+(x.ok?'ok':'bad')+'\">状态：'+(x.ok?'正常':'异常 ('+x.code+')')+'</span></div>'; });}" +
+
+"loadStatus(); setInterval(loadStatus,30000);" +
+"</script></body></html>";
+
+/* ===========================
+         Worker 路由
+   =========================== */
+addEventListener("fetch", e => e.respondWith(handle(e.request)));
+
+async function handle(req) {
+    const u = new URL(req.url);
+
+    if (u.pathname === "/")       return html(adminHTML);
+    if (u.pathname === "/status") return html(statusHTML);
+
+    if (u.pathname === "/api/list")
+        return json(await loadList());
+
+    if (u.pathname === "/api/add") {
+        const body = await req.text();
+        const data = JSON.parse(body || "{}");
+        const list = await loadList();
+        list.push({ name: data.name, url: data.url });
+        await saveList(list);
+        return json({ ok: true });
+    }
+
+    if (u.pathname === "/api/del") {
+        const i = Number(u.searchParams.get("i"));
+        const list = await loadList();
+        list.splice(i, 1);
+        await saveList(list);
+        return json({ ok: true });
+    }
+
+    if (u.pathname === "/api/status") {
+        const list = await loadList();
+        const out = [];
+        for (const x of list) {
+            try {
+                const r = await fetch(x.url);
+                out.push({ name: x.name, url: x.url, ok: r.ok, code: r.status });
+            } catch (e) {
+                out.push({ name: x.name, url: x.url, ok: false, code: "ERR" });
+            }
+        }
+        return json(out);
+    }
+
+    return new Response("Not Found", { status: 404 });
+}
+
+function html(s){ return new Response(s, { headers:{ "content-type":"text/html" } }); }
+function json(o){ return new Response(JSON.stringify(o), { headers:{ "content-type":"application/json" } }); }
+
+// 定时检测 + Telegram
+addEventListener("scheduled", e => e.waitUntil(runCheck()));
+
+async function runCheck() {
+    const list = await loadList();
+    for (const x of list) {
+        try {
+            const r = await fetch(x.url);
+            if (!r.ok) {
+                await tg("❌ 异常\n" + x.name + "\n" + x.url + "\n状态码：" + r.status);
+            }
+        } catch (e) {
+            await tg("❌ 失败\n" + x.name + "\n" + x.url + "\n错误：" + e);
+        }
+    }
+}
